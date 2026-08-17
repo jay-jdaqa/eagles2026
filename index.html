@@ -400,7 +400,7 @@
     <div class="eip-video-frame" id="eipVideoFrame">
       <div class="eip-video-placeholder">
         <b>🎬 Video goes here</b>
-        Drop a link into CONFIG.videoUrl at the top of the script<br>(a direct .mp4 link works best for autoplay; YouTube also supported)
+        Drop a link into CONFIG.videoUrl at the top of the script<br>(a direct .mp4 link or a YouTube link both work)
       </div>
     </div>
 
@@ -513,7 +513,7 @@
   // =========================================================
   const CONFIG = {
     hostName: "Jay",
-    videoUrl: "",              // a direct .mp4 URL gives the smoothest autoplay; a YouTube link also works
+    videoUrl: "https://youtu.be/No-LzPGIp44", // a direct .mp4 URL gives the smoothest autoplay; a YouTube link also works
     videoDurationSeconds: 20,  // fallback timer only, used for Google Drive embeds (can't detect "ended")
     woooGifUrl: "",            // optional: a Giphy/Ric Flair WOOOOO gif or image URL you have rights to use
     adminKey: "eagles2026",    // change this, then only open ?admin=yourkey yourself
@@ -544,20 +544,32 @@
   // ---------- Sheet API helpers ----------
   async function sheetGet(action){
     if(!hasSheet) return null;
-    const url = CONFIG.sheetUrl + '?action=' + encodeURIComponent(action) +
-      (action === 'admin' ? '&key=' + encodeURIComponent(CONFIG.adminKey) : '');
-    const res = await fetch(url);
-    return res.json();
+    try{
+      const url = CONFIG.sheetUrl + '?action=' + encodeURIComponent(action) +
+        (action === 'admin' ? '&key=' + encodeURIComponent(CONFIG.adminKey) : '');
+      const res = await fetch(url);
+      if(!res.ok) return { ok:false, error:'http_'+res.status };
+      return await res.json();
+    }catch(err){
+      console.error('sheetGet failed', err);
+      return { ok:false, error:'network' };
+    }
   }
   async function sheetPost(payload){
     if(!hasSheet) return { ok:false, offline:true };
-    // text/plain avoids a CORS preflight against Apps Script
-    const res = await fetch(CONFIG.sheetUrl, {
-      method:'POST',
-      headers:{ 'Content-Type':'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    return res.json();
+    try{
+      // text/plain avoids a CORS preflight against Apps Script
+      const res = await fetch(CONFIG.sheetUrl, {
+        method:'POST',
+        headers:{ 'Content-Type':'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok) return { ok:false, error:'http_'+res.status };
+      return await res.json();
+    }catch(err){
+      console.error('sheetPost failed', err);
+      return { ok:false, error:'network' };
+    }
   }
 
   // ---------- URL params ----------
@@ -573,24 +585,12 @@
   }
   document.getElementById('eipScrollCue').addEventListener('click', goToNext);
 
-  // ---------- Video (autoplay muted -> auto-scrolls to the gate when it ends) ----------
+  // ---------- Video (starts paused with sound on -> auto-scrolls to the gate when it ends) ----------
   (function initVideo(){
     if(!CONFIG.videoUrl) return;
     const frame = document.getElementById('eipVideoFrame');
     frame.innerHTML = '';
 
-    function addUnmute(getPlayer){
-      const btn = document.createElement('button');
-      btn.className = 'eip-unmute-btn';
-      btn.innerHTML = '🔇 Tap for sound';
-      btn.addEventListener('click', (e)=>{
-        e.stopPropagation();
-        const el = getPlayer();
-        if(el && 'muted' in el){ el.muted = false; btn.remove(); }
-        else if(el && el.unMute){ el.unMute(); el.setVolume(100); btn.remove(); }
-      });
-      frame.appendChild(btn);
-    }
     function addSkip(){
       const btn = document.createElement('button');
       btn.className = 'eip-skip-btn';
@@ -611,9 +611,8 @@
       function createPlayer(){
         new YT.Player('eipYtPlayer', {
           videoId,
-          playerVars:{ autoplay:1, mute:1, playsinline:1, controls:1, rel:0 },
+          playerVars:{ autoplay:0, mute:0, playsinline:1, controls:1, rel:0 },
           events:{
-            onReady:(e)=>{ e.target.playVideo(); addUnmute(()=>e.target); },
             onStateChange:(e)=>{ if(e.data === YT.PlayerState.ENDED) goToNext(); }
           }
         });
@@ -637,12 +636,10 @@
     } else {
       const v = document.createElement('video');
       v.src = CONFIG.videoUrl;
-      v.controls = true; v.playsInline = true; v.autoplay = true; v.muted = true;
+      v.controls = true; v.playsInline = true; // no autoplay, no muted — starts paused with sound on
       v.addEventListener('ended', goToNext);
       frame.appendChild(v);
       addSkip();
-      addUnmute(()=>v);
-      v.play().catch(()=>{});
     }
   })();
 
@@ -681,9 +678,14 @@
     const errorEl = document.getElementById('eipGateError');
     const name = getGateName();
     if(!name){ errorEl.textContent = 'Enter your full name first.'; return; }
-    errorEl.textContent = '';
+    errorEl.textContent = 'Submitting…';
     guestName = name;
-    await sheetPost({ action:'submit', name: guestName, status:'declined', picks:[] });
+    const result = await sheetPost({ action:'submit', name: guestName, status:'declined', picks:[] });
+    if(result && result.ok === false && !result.offline){
+      errorEl.textContent = 'Couldn\'t save that — check your connection and try again.';
+      return;
+    }
+    errorEl.textContent = '';
     document.getElementById('eipGate').classList.add('eip-hidden');
     document.getElementById('eipDeclineText').textContent =
       `Understood, ${guestName} — no games for you this season. We'll catch you at the tailgate anyway.`;
@@ -753,13 +755,19 @@
 
   document.getElementById('eipSubmitBtn').addEventListener('click', async ()=>{
     const errorEl = document.getElementById('eipError');
+    const btn = document.getElementById('eipSubmitBtn');
     errorEl.textContent = '';
     if(!guestName || picks.length===0) return;
+
+    btn.disabled = true;
+    const originalLabel = btn.textContent;
+    btn.textContent = 'Locking in…';
 
     await loadAssignments();
     const stillAvailable = picks.filter(id => !assignments[id]);
     if(stillAvailable.length === 0){
       errorEl.textContent = 'Ah, snap — all your picks just got claimed by someone faster. Refresh and try again.';
+      btn.textContent = originalLabel; btn.disabled = false;
       await renderGames();
       return;
     }
@@ -767,6 +775,7 @@
     const result = await sheetPost({ action:'submit', name: guestName, status:'going', picks });
     if(result && result.ok === false && !result.offline){
       errorEl.textContent = 'Something went wrong saving your picks — try again in a moment.';
+      btn.textContent = originalLabel; btn.disabled = false;
       return;
     }
     showFanfare(picks);
