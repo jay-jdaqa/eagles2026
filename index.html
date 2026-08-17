@@ -673,7 +673,7 @@
     return el.value.trim();
   }
 
-  document.getElementById('eipWoooBtn').addEventListener('click', async ()=>{
+  document.getElementById('eipWoooBtn').addEventListener('click', ()=>{
     const errorEl = document.getElementById('eipGateError');
     const name = getGateName();
     if(!name){ errorEl.textContent = 'Enter your full name first.'; return; }
@@ -682,8 +682,9 @@
     document.getElementById('eipSubmitAsName').textContent = guestName;
     const wooSound = document.getElementById('eipWooSound');
     if(wooSound){ wooSound.currentTime = 0; wooSound.play().catch(()=>{}); }
+    document.getElementById('eipGames').classList.remove('eip-hidden');
     document.getElementById('eipGames').scrollIntoView({behavior:'smooth'});
-    await renderGames();
+    renderGames(); // instant — renders now, network prefetch already running/done in background
   });
 
   document.getElementById('eipNoooBtn').addEventListener('click', async ()=>{
@@ -711,6 +712,7 @@
   // ---------- Game state ----------
   let assignments = {};
   let picks = [];
+  let assignmentsFetchStarted = false;
 
   async function loadAssignments(){
     if(!hasSheet) return;
@@ -719,6 +721,21 @@
       assignments = (data && data.games) ? data.games : {};
     }catch(e){ assignments = {}; }
   }
+
+  // Kicks off the sheet fetch once, as early as possible (page load), so it's
+  // already done — or close to it — by the time the guest actually reaches the
+  // games section. Safe to call multiple times; only fires the network request once.
+  function prefetchAssignments(){
+    if(assignmentsFetchStarted) return;
+    assignmentsFetchStarted = true;
+    loadAssignments().then(()=>{
+      const gamesSection = document.getElementById('eipGames');
+      if(gamesSection && !gamesSection.classList.contains('eip-hidden')){
+        renderGameGrid(); // fill in anything that got claimed while we were fetching
+      }
+    });
+  }
+  prefetchAssignments();
 
   function gameById(id){ return GAMES.find(g=>g.id===id); }
 
@@ -747,11 +764,12 @@
     updateSubmitState();
   }
 
-  // Fetches fresh availability, then renders. Only call this when it's actually needed
-  // (arriving at the games section, or right before final submit) — never on every tap.
-  async function renderGames(){
-    await loadAssignments();
+  // Renders instantly from whatever's in memory, then makes sure a fetch is
+  // running (kicks one off if the page-load prefetch hasn't fired yet, e.g.
+  // if hasSheet only became true late). Never blocks the render on the network.
+  function renderGames(){
     renderGameGrid();
+    prefetchAssignments();
   }
 
   function togglePick(id){
